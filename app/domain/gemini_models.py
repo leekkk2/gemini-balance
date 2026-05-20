@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.constants import DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P
 
@@ -83,13 +83,22 @@ class VerifySelectedKeysRequest(BaseModel):
 
 
 class GeminiEmbedContent(BaseModel):
-    """嵌入内容模型"""
+    """嵌入内容模型
 
-    parts: List[Dict[str, str]]
+    parts 的值类型为 Any 而非 str：gemini-embedding-2 等原生多模态 embedding
+    模型的 part 可以是 {"text": ...} 或 {"inline_data": {"mime_type": ...,
+    "data": ...}} 这类嵌套对象，限定为 str 会让多模态请求 Pydantic 校验失败。
+    """
+
+    parts: List[Dict[str, Any]]
 
 
 class GeminiEmbedRequest(BaseModel):
     """单一嵌入请求模型"""
+
+    # 同时接受 camelCase 字段名与 snake_case 别名，避免不同调用方
+    # （taskType/task_type、outputDimensionality/output_dimensionality）丢字段
+    model_config = ConfigDict(populate_by_name=True)
 
     content: GeminiEmbedContent
     taskType: Optional[
@@ -104,9 +113,11 @@ class GeminiEmbedRequest(BaseModel):
             "FACT_VERIFICATION",
             "CODE_RETRIEVAL_QUERY",
         ]
-    ] = None
+    ] = Field(default=None, alias="task_type")
     title: Optional[str] = None
-    outputDimensionality: Optional[int] = None
+    outputDimensionality: Optional[int] = Field(
+        default=None, alias="output_dimensionality"
+    )
 
 
 class GeminiBatchEmbedRequest(BaseModel):
