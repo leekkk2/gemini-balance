@@ -68,3 +68,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ github.workflow }}
           cache-to: type=gha,scope=${{ github.workflow }}
+
+  # 镜像推送成功后，SSH 到部署主机拉取新镜像并重建容器。
+  # 部署主机名 / 用户名 / SSH 私钥 / compose 目录全部走 GitHub Secrets，
+  # 不在 workflow 明文出现（开源仓内容政策）。
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # 仅 push 到 main 分支时部署；PR 与其它分支不触发
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy to server over SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # DEPLOY_PATH = 部署主机上 gemini-balance 的 docker compose 目录
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            # 部署主机磁盘紧张：拉取前后各清一次 dangling 镜像
+            docker image prune -f
+            docker compose pull
+            docker compose up -d
+            docker image prune -f
+            docker compose ps
