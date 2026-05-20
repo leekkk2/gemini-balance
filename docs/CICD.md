@@ -83,6 +83,11 @@ docker compose ps
   `set -euo pipefail` inside the deploy script itself.
 - **Host-key pinning:** `fingerprint` is set from `DEPLOY_FINGERPRINT` so the
   action verifies the host key instead of blind trust-on-first-use.
+- **Host-key algorithm gotcha:** the underlying Go SSH client negotiates host
+  key algorithms in the order `ecdsa-sha2-nistp256` → RSA → `ssh-ed25519`
+  (ed25519 is *last*). If the host offers an ECDSA key, `DEPLOY_FINGERPRINT`
+  must be that **ECDSA** key's fingerprint — pinning the ed25519 fingerprint
+  yields `ssh: host key fingerprint mismatch`. See rotation steps below.
 
 ## Deploy key rotation
 
@@ -97,5 +102,15 @@ The deploy SSH key is a dedicated ed25519 keypair (not a personal key).
    the host's `authorized_keys`.
 5. Delete the local `deploy_key` / `deploy_key.pub` files.
 
-If the host SSH key changes, refresh `DEPLOY_FINGERPRINT` with the new SHA256
-fingerprint (`ssh-keygen -l -F <host>` against a trusted `known_hosts`).
+If the host SSH key changes, refresh `DEPLOY_FINGERPRINT`. Obtain the correct
+fingerprint **for the algorithm the client negotiates** — in practice the host's
+ECDSA key (see the algorithm gotcha above). On the deploy host:
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub | cut -d ' ' -f2
+# -> SHA256:...   (use this verbatim, including the "SHA256:" prefix)
+```
+
+Then `gh secret set DEPLOY_FINGERPRINT -R <owner>/gemini-balance --body 'SHA256:...'`.
+If the host has no ECDSA key, use `ssh_host_rsa_key.pub`; ed25519 is negotiated
+only when neither ECDSA nor RSA is offered.
