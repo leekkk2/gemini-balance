@@ -70,24 +70,43 @@ jobs:
           cache-to: type=gha,scope=${{ github.workflow }}
 
   # 镜像推送成功后，SSH 到部署主机拉取新镜像并重建容器。
-  # 部署主机名 / 用户名 / SSH 私钥 / compose 目录全部走 GitHub Secrets，
-  # 不在 workflow 明文出现（开源仓内容政策）。
+  # 敏感项（主机名 / SSH 私钥 / host 指纹）走 Secrets；非敏感项（用户名 /
+  # 端口 / compose 目录）走 repository Variables。详见 docs/CICD.md。
   deploy:
     needs: build
     runs-on: ubuntu-latest
     # 仅 push 到 main 分支时部署；PR 与其它分支不触发
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      # fork-safe 守卫：下游 fork 无 DEPLOY_HOST secret 时整个部署 no-op，不 fail。
+      # 注：secrets context 在 job/step 级 if 条件中不可用，因此用 guard step
+      # 读取 secret 落到 output，后续步骤再按 output 决定是否执行。
+      - name: Check deploy secrets present
+        id: guard
+        run: |
+          if [ -n "${{ secrets.DEPLOY_HOST }}" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPLOY_HOST 未配置，跳过部署（fork-safe no-op）"
+          fi
+
       - name: Deploy to server over SSH
+        if: steps.guard.outputs.ready == 'true'
         uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
+          port: ${{ vars.DEPLOY_PORT }}
+          username: ${{ vars.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          # DEPLOY_PATH = 部署主机上 gemini-balance 的 docker compose 目录
+          # host-key 校验：固定 SHA256 指纹，避免盲 TOFU
+          fingerprint: ${{ secrets.DEPLOY_FINGERPRINT }}
+          # request_pty + 不使用 script_stop：规避 appleboy 旧坑（吞 stdout/
+          # 误报非零退出）；失败检测交由脚本内 set -euo pipefail
+          request_pty: true
           script: |
-            set -e
-            cd "${{ secrets.DEPLOY_PATH }}"
+            set -euo pipefail
+            cd "${{ vars.DEPLOY_PATH }}"
             # 部署主机磁盘紧张：拉取前后各清一次 dangling 镜像
             docker image prune -f
             docker compose pull
