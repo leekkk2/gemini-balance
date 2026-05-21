@@ -1,13 +1,15 @@
-fastapi
+# Web 框架核心依赖锁定到经验证可用版本：starlette 1.0.0 移除了旧式
+# TemplateResponse(name, context) 签名，未锁定时 CI 重建会拉到不兼容版本
+fastapi==0.136.1
 httpx[socks]
 openai
-pydantic
-pydantic_settings
+pydantic==2.13.4
+pydantic_settings==2.14.1
 requests
-starlette
-uvicorn
+starlette==1.0.0
+uvicorn==0.47.0
 google-genai
-jinja2
+jinja2==3.1.6
 python-multipart
 cryptography
 pymysql
