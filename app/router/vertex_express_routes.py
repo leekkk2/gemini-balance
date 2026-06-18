@@ -54,35 +54,36 @@ async def list_models(
     allowed_token=Depends(security_service.verify_key_or_goog_api_key),
     key_manager: KeyManager = Depends(get_key_manager),
 ):
-    """获取可用的 Gemini 模型列表，并根据配置添加衍生模型（搜索、图像、非思考）。"""
-    operation_name = "list_gemini_models"
+    """获取可用的 Vertex Express 模型列表，并根据配置添加衍生模型。"""
+    operation_name = "list_vertex_models"
     logger.info("-" * 50 + operation_name + "-" * 50)
-    logger.info("Handling Gemini models list request")
+    logger.info("Handling Vertex Express models list request")
 
     try:
-        api_key = await key_manager.get_random_valid_key()
+        api_key = await key_manager.get_next_working_vertex_key()
         if not api_key:
             raise HTTPException(
-                status_code=503, detail="No valid API keys available to fetch models."
+                status_code=503,
+                detail="No valid Vertex API keys available to fetch models.",
             )
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        models_data = await model_service.get_gemini_models(api_key)
+        models_data = await model_service.get_public_source_models("vertex", api_key)
         if not models_data or "models" not in models_data:
             raise HTTPException(
                 status_code=500, detail="Failed to fetch base models list."
             )
 
-        logger.info("Gemini models list request successful")
+        logger.info("Vertex Express models list request successful")
         return model_service.build_gemini_public_models(models_data)
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
-        logger.error(f"Error getting Gemini models list: {str(e)}")
+        logger.error(f"Error getting Vertex Express models list: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="Internal server error while fetching Gemini models list",
+            detail="Internal server error while fetching Vertex Express models list",
         ) from e
 
 

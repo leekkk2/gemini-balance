@@ -1,11 +1,11 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from app.config.config import settings
 from app.log.logger import get_model_logger
-from app.service.client.api_client import GeminiApiClient
+from app.service.client.api_client import GeminiApiClient, OpenaiApiClient
 from app.service.model.model_aliases import (
     ModelAliasResolutionError,
     get_base_model_name,
@@ -15,6 +15,8 @@ from app.service.model.model_aliases import (
 )
 
 logger = get_model_logger()
+
+UpstreamSource = Literal["gemini", "vertex", "openai"]
 
 
 @dataclass(frozen=True)
@@ -85,28 +87,137 @@ class ModelService:
         except ModelAliasResolutionError:
             return False
 
+    def _extract_model_records(self, payload: Any) -> List[Dict[str, Any]]:
+        if isinstance(payload, dict):
+            for field in ("models", "publisherModels", "data"):
+                records = payload.get(field)
+                if isinstance(records, list):
+                    return [record for record in records if isinstance(record, dict)]
+        elif isinstance(payload, list):
+            return [record for record in payload if isinstance(record, dict)]
+        return []
+
+    def _extract_model_raw_name(self, model: Dict[str, Any]) -> str:
+        for field in ("name", "id", "model", "value"):
+            value = model.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _extract_model_identifier(self, model: Dict[str, Any]) -> str:
+        raw_name = self._extract_model_raw_name(model)
+        if not raw_name:
+            return ""
+        return raw_name.split("/")[-1].strip()
+
+    def _normalize_upstream_model(
+        self, model: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        model_id = self._extract_model_identifier(model)
+        if not model_id:
+            return None
+
+        raw_name = self._extract_model_raw_name(model) or model_id
+        display_name = (
+            model.get("displayName") or model.get("display_name") or model_id
+        )
+        description = model.get("description") or model.get("note") or model.get(
+            "comment"
+        )
+
+        return {
+            "id": model_id,
+            "raw_name": raw_name,
+            "display_name": str(display_name),
+            "description": str(description or ""),
+            "raw": deepcopy(model),
+        }
+
+    async def _fetch_gemini_family_models(
+        self, base_url: str, api_key: str
+    ) -> Optional[Dict[str, Any]]:
+        api_client = GeminiApiClient(base_url=base_url)
+        models: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        page_token: Optional[str] = None
+
+        for _ in range(20):
+            response = await api_client.get_models(api_key, page_token=page_token)
+            if response is None:
+                logger.error("从 API 客户端获取模型列表失败。")
+                return None
+
+            for model in self._extract_model_records(response):
+                dedupe_key = (
+                    self._extract_model_identifier(model)
+                    or self._extract_model_raw_name(model)
+                ).lower()
+                if dedupe_key and dedupe_key in seen:
+                    continue
+                if dedupe_key:
+                    seen.add(dedupe_key)
+                models.append(model)
+
+            next_page_token = response.get("nextPageToken")
+            if not isinstance(next_page_token, str) or not next_page_token:
+                break
+            page_token = next_page_token
+
+        return {"models": models, "nextPageToken": None}
+
+    async def get_upstream_models(
+        self, source: UpstreamSource, api_key: str
+    ) -> Optional[List[Dict[str, Any]]]:
+        if source == "openai":
+            payload = await OpenaiApiClient(base_url=settings.BASE_URL).get_models(
+                api_key
+            )
+        elif source == "vertex":
+            payload = await self._fetch_gemini_family_models(
+                settings.VERTEX_EXPRESS_BASE_URL, api_key
+            )
+        else:
+            payload = await self._fetch_gemini_family_models(settings.BASE_URL, api_key)
+
+        if payload is None:
+            return None
+
+        models: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for model in self._extract_model_records(payload):
+            normalized = self._normalize_upstream_model(model)
+            if not normalized:
+                continue
+            dedupe_key = normalized["id"].lower()
+            if dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            models.append(normalized)
+        return models
+
+    async def get_public_source_models(
+        self, source: UpstreamSource, api_key: str
+    ) -> Optional[Dict[str, Any]]:
+        upstream_models = await self.get_upstream_models(source, api_key)
+        if upstream_models is None:
+            return None
+
+        public_models = []
+        for model in upstream_models:
+            if model["id"] in settings.FILTERED_MODELS:
+                logger.debug(f"Filtered out model: {model['id']}")
+                continue
+
+            item = deepcopy(model["raw"]) if isinstance(model["raw"], dict) else {}
+            item["name"] = f"models/{model['id']}"
+            item["displayName"] = model["display_name"]
+            item["description"] = model["description"]
+            public_models.append(item)
+
+        return {"models": public_models}
+
     async def get_gemini_models(self, api_key: str) -> Optional[Dict[str, Any]]:
-        api_client = GeminiApiClient(base_url=settings.BASE_URL)
-        gemini_models = await api_client.get_models(api_key)
-
-        if gemini_models is None:
-            logger.error("从 API 客户端获取模型列表失败。")
-            return None
-
-        try:
-            filtered_models_list = []
-            for model in gemini_models.get("models", []):
-                model_id = model["name"].split("/")[-1]
-                if model_id not in settings.FILTERED_MODELS:
-                    filtered_models_list.append(model)
-                else:
-                    logger.debug(f"Filtered out model: {model_id}")
-
-            gemini_models["models"] = filtered_models_list
-            return gemini_models
-        except Exception as e:
-            logger.error(f"处理模型列表时出错: {e}")
-            return None
+        return await self.get_public_source_models("gemini", api_key)
 
     def _append_base_derived_models(self, models_json: Dict[str, Any]) -> None:
         model_mapping = {
@@ -224,7 +335,7 @@ class ModelService:
         gemini_models = await self.get_gemini_models(api_key)
         if gemini_models is None:
             return None
-        
+
         return await self.convert_to_openai_models_format(gemini_models)
 
     async def convert_to_openai_models_format(
@@ -232,7 +343,8 @@ class ModelService:
     ) -> Dict[str, Any]:
         openai_format = {"object": "list", "data": [], "success": True}
         model_mapping = {
-            model["name"].split("/")[-1]: model for model in gemini_models.get("models", [])
+            model["name"].split("/")[-1]: model
+            for model in gemini_models.get("models", [])
         }
         existing_ids = set()
         created_at = int(datetime.now(timezone.utc).timestamp())

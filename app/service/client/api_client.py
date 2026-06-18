@@ -54,7 +54,9 @@ class GeminiApiClient(ApiClient):
             logger.info(f"Using custom headers: {settings.CUSTOM_HEADERS}")
         return headers
 
-    async def get_models(self, api_key: str) -> Optional[Dict[str, Any]]:
+    async def get_models(
+        self, api_key: str, page_token: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """获取可用的 Gemini 模型列表"""
         timeout = httpx.Timeout(timeout=5)
 
@@ -68,9 +70,12 @@ class GeminiApiClient(ApiClient):
 
         headers = self._prepare_headers()
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy_to_use) as client:
-            url = f"{self.base_url}/models?key={api_key}&pageSize=1000"
+            url = f"{self.base_url}/models"
+            params = {"key": api_key, "pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
             try:
-                response = await client.get(url, headers=headers)
+                response = await client.get(url, params=params, headers=headers)
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPStatusError as e:
