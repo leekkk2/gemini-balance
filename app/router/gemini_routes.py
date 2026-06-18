@@ -1,5 +1,4 @@
 import asyncio
-from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -53,6 +52,20 @@ async def get_embedding_service(key_manager: KeyManager = Depends(get_key_manage
     return GeminiEmbeddingService(settings.BASE_URL, key_manager)
 
 
+async def _resolve_supported_model_or_400(model_name: str):
+    if not await model_service.check_model_support(model_name):
+        raise HTTPException(
+            status_code=400, detail=f"Model {model_name} is not supported"
+        )
+
+    resolved_model = model_service.resolve_request_model(model_name)
+    if resolved_model.is_alias:
+        logger.info(
+            f"Resolved Gemini model alias '{resolved_model.public_name}' -> '{resolved_model.upstream_name}'"
+        )
+    return resolved_model
+
+
 @router.get("/models")
 @router_v1beta.get("/models")
 async def list_models(
@@ -79,38 +92,8 @@ async def list_models(
                 status_code=500, detail="Failed to fetch base models list."
             )
 
-        models_json = deepcopy(models_data)
-        model_mapping = {
-            x.get("name", "").split("/", maxsplit=1)[-1]: x
-            for x in models_json.get("models", [])
-        }
-
-        def add_derived_model(base_name, suffix, display_suffix):
-            model = model_mapping.get(base_name)
-            if not model:
-                logger.warning(
-                    f"Base model '{base_name}' not found for derived model '{suffix}'."
-                )
-                return
-            item = deepcopy(model)
-            item["name"] = f"models/{base_name}{suffix}"
-            display_name = f'{item.get("displayName", base_name)}{display_suffix}'
-            item["displayName"] = display_name
-            item["description"] = display_name
-            models_json["models"].append(item)
-
-        if settings.SEARCH_MODELS:
-            for name in settings.SEARCH_MODELS:
-                add_derived_model(name, "-search", " For Search")
-        if settings.IMAGE_MODELS:
-            for name in settings.IMAGE_MODELS:
-                add_derived_model(name, "-image", " For Image")
-        if settings.THINKING_MODELS:
-            for name in settings.THINKING_MODELS:
-                add_derived_model(name, "-non-thinking", " Non Thinking")
-
         logger.info("Gemini models list request successful")
-        return models_json
+        return model_service.build_gemini_public_models(models_data)
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
@@ -137,6 +120,7 @@ async def generate_content(
     async with handle_route_errors(
         logger, operation_name, failure_message="Content generation failed"
     ):
+        resolved_model = await _resolve_supported_model_or_400(model_name)
         logger.info(
             f"Handling Gemini content generation request for model: {model_name}"
         )
@@ -144,7 +128,7 @@ async def generate_content(
 
         # 检测是否为原生Gemini TTS请求
         is_native_tts = False
-        if "tts" in model_name.lower() and request.generationConfig:
+        if "tts" in resolved_model.upstream_name.lower() and request.generationConfig:
             # 直接从解析后的request对象获取TTS配置
             response_modalities = request.generationConfig.responseModalities or []
             speech_config = request.generationConfig.speechConfig or {}
@@ -159,18 +143,13 @@ async def generate_content(
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        if not await model_service.check_model_support(model_name):
-            raise HTTPException(
-                status_code=400, detail=f"Model {model_name} is not supported"
-            )
-
         # 所有原生TTS请求都使用TTS增强服务
         if is_native_tts:
             try:
                 logger.info("Using native TTS enhanced service")
                 tts_service = await get_tts_chat_service(key_manager)
                 response = await tts_service.generate_content(
-                    model=model_name, request=request, api_key=api_key
+                    model=resolved_model.upstream_name, request=request, api_key=api_key
                 )
                 return response
             except Exception as e:
@@ -180,7 +159,10 @@ async def generate_content(
 
         # 使用标准服务处理所有其他请求（非TTS）
         response = await chat_service.generate_content(
-            model=model_name, request=request, api_key=api_key
+            model=resolved_model.upstream_name,
+            request=request,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         return response
 
@@ -201,6 +183,7 @@ async def stream_generate_content(
     async with handle_route_errors(
         logger, operation_name, failure_message="Streaming request initiation failed"
     ):
+        resolved_model = await _resolve_supported_model_or_400(model_name)
         logger.info(
             f"Handling Gemini streaming content generation for model: {model_name}"
         )
@@ -208,13 +191,11 @@ async def stream_generate_content(
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        if not await model_service.check_model_support(model_name):
-            raise HTTPException(
-                status_code=400, detail=f"Model {model_name} is not supported"
-            )
-
         raw_stream = chat_service.stream_generate_content(
-            model=model_name, request=request, api_key=api_key
+            model=resolved_model.upstream_name,
+            request=request,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         try:
             # 尝试获取第一条数据，判断是正常 SSE（data: 前缀）还是错误 JSON
@@ -256,18 +237,17 @@ async def count_tokens(
     async with handle_route_errors(
         logger, operation_name, failure_message="Token counting failed"
     ):
+        resolved_model = await _resolve_supported_model_or_400(model_name)
         logger.info(f"Handling Gemini token count request for model: {model_name}")
         logger.debug(f"Request: \n{request.model_dump_json(indent=2)}")
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        if not await model_service.check_model_support(model_name):
-            raise HTTPException(
-                status_code=400, detail=f"Model {model_name} is not supported"
-            )
-
         response = await chat_service.count_tokens(
-            model=model_name, request=request, api_key=api_key
+            model=resolved_model.upstream_name,
+            request=request,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         return response
 
@@ -288,18 +268,17 @@ async def embed_content(
     async with handle_route_errors(
         logger, operation_name, failure_message="Embedding content generation failed"
     ):
+        resolved_model = await _resolve_supported_model_or_400(model_name)
         logger.info(f"Handling Gemini embedding request for model: {model_name}")
         logger.debug(f"Request: \n{request.model_dump_json(indent=2)}")
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        if not await model_service.check_model_support(model_name):
-            raise HTTPException(
-                status_code=400, detail=f"Model {model_name} is not supported"
-            )
-
         response = await embedding_service.embed_content(
-            model=model_name, request=request, api_key=api_key
+            model=resolved_model.upstream_name,
+            request=request,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         return response
 
@@ -322,18 +301,17 @@ async def batch_embed_contents(
         operation_name,
         failure_message="Batch embedding content generation failed",
     ):
+        resolved_model = await _resolve_supported_model_or_400(model_name)
         logger.info(f"Handling Gemini batch embedding request for model: {model_name}")
         logger.debug(f"Request: \n{request.model_dump_json(indent=2)}")
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
 
-        if not await model_service.check_model_support(model_name):
-            raise HTTPException(
-                status_code=400, detail=f"Model {model_name} is not supported"
-            )
-
         response = await embedding_service.batch_embed_contents(
-            model=model_name, request=request, api_key=api_key
+            model=resolved_model.upstream_name,
+            request=request,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         return response
 

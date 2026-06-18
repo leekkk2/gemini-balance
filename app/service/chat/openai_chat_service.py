@@ -282,20 +282,31 @@ class OpenAIChatService:
         self,
         request: ChatRequest,
         api_key: str,
+        public_model: str | None = None,
     ) -> Union[Dict[str, Any], AsyncGenerator[str, None]]:
         """创建聊天完成"""
+        upstream_model = request.model
+        response_model = (public_model or upstream_model).strip()
         messages, instruction = self.message_converter.convert(
-            request.messages, request.model
+            request.messages, upstream_model
         )
 
         payload = _build_payload(request, messages, instruction)
 
         if request.stream:
-            return self._handle_stream_completion(request.model, payload, api_key)
-        return await self._handle_normal_completion(request.model, payload, api_key)
+            return self._handle_stream_completion(
+                response_model, upstream_model, payload, api_key
+            )
+        return await self._handle_normal_completion(
+            response_model, upstream_model, payload, api_key
+        )
 
     async def _handle_normal_completion(
-        self, model: str, payload: Dict[str, Any], api_key: str
+        self,
+        response_model: str,
+        upstream_model: str,
+        payload: Dict[str, Any],
+        api_key: str,
     ) -> Dict[str, Any]:
         """处理普通聊天完成"""
         start_time = time.perf_counter()
@@ -305,7 +316,9 @@ class OpenAIChatService:
         response = None
 
         try:
-            response = await self.api_client.generate_content(payload, model, api_key)
+            response = await self.api_client.generate_content(
+                payload, upstream_model, api_key
+            )
             usage_metadata = response.get("usageMetadata", {})
             is_success = True
             status_code = 200
@@ -314,7 +327,7 @@ class OpenAIChatService:
             try:
                 result = self.response_handler.handle_response(
                     response,
-                    model,
+                    response_model,
                     stream=False,
                     finish_reason="stop",
                     usage_metadata=usage_metadata,
@@ -322,7 +335,7 @@ class OpenAIChatService:
                 return result
             except Exception as response_error:
                 logger.error(
-                    f"Response processing failed for model {model}: {str(response_error)}"
+                    f"Response processing failed for model {response_model}: {str(response_error)}"
                 )
 
                 # 记录详细的错误信息
@@ -340,7 +353,7 @@ class OpenAIChatService:
             is_success = False
             status_code = e.args[0]
             error_log_msg = e.args[1]
-            logger.error(f"API call failed for model {model}: {error_log_msg}")
+            logger.error(f"API call failed for model {response_model}: {error_log_msg}")
 
             # 特别记录 max_tokens 相关的错误
             gen_config = payload.get("generationConfig", {})
@@ -355,7 +368,7 @@ class OpenAIChatService:
 
             await add_error_log(
                 gemini_key=api_key,
-                model_name=model,
+                model_name=response_model,
                 error_type="openai-chat-non-stream",
                 error_log=error_log_msg,
                 error_code=status_code,
@@ -371,7 +384,7 @@ class OpenAIChatService:
             )
 
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,
@@ -380,15 +393,19 @@ class OpenAIChatService:
             )
 
     async def _fake_stream_logic_impl(
-        self, model: str, payload: Dict[str, Any], api_key: str
+        self,
+        response_model: str,
+        upstream_model: str,
+        payload: Dict[str, Any],
+        api_key: str,
     ) -> AsyncGenerator[str, None]:
         """处理伪流式 (fake stream) 的核心逻辑"""
         logger.info(
-            f"Fake streaming enabled for model: {model}. Calling non-streaming endpoint."
+            f"Fake streaming enabled for model: {response_model}. Calling non-streaming endpoint."
         )
 
         api_response_task = asyncio.create_task(
-            self.api_client.generate_content(payload, model, api_key)
+            self.api_client.generate_content(payload, upstream_model, api_key)
         )
 
         i = 0
@@ -400,7 +417,7 @@ class OpenAIChatService:
                     i = 0
                     empty_chunk = self.response_handler.handle_response(
                         {},
-                        model,
+                        response_model,
                         stream=True,
                         finish_reason="stop",
                         usage_metadata=None,
@@ -414,13 +431,15 @@ class OpenAIChatService:
         if response and response.get("candidates"):
             response = self.response_handler.handle_response(
                 response,
-                model,
+                response_model,
                 stream=True,
                 finish_reason="stop",
                 usage_metadata=response.get("usageMetadata", {}),
             )
             yield f"data: {json.dumps(response)}\n\n"
-            logger.info(f"Sent full response content for fake stream: {model}")
+            logger.info(
+                f"Sent full response content for fake stream: {response_model}"
+            )
         else:
             error_message = "Failed to get response from model"
             if response and isinstance(response, dict) and response.get("error"):
@@ -429,27 +448,35 @@ class OpenAIChatService:
                     error_message = error_details.get("message", error_message)
 
             logger.error(
-                f"No candidates or error in response for fake stream model {model}: {response}"
+                f"No candidates or error in response for fake stream model {response_model}: {response}"
             )
             error_chunk = self.response_handler.handle_response(
-                {}, model, stream=True, finish_reason="stop", usage_metadata=None
+                {},
+                response_model,
+                stream=True,
+                finish_reason="stop",
+                usage_metadata=None,
             )
             yield f"data: {json.dumps(error_chunk)}\n\n"
 
     async def _real_stream_logic_impl(
-        self, model: str, payload: Dict[str, Any], api_key: str
+        self,
+        response_model: str,
+        upstream_model: str,
+        payload: Dict[str, Any],
+        api_key: str,
     ) -> AsyncGenerator[str, None]:
         """处理真实流式 (real stream) 的核心逻辑"""
         tool_call_flag = False
         usage_metadata = None
         async for line in self.api_client.stream_generate_content(
-            payload, model, api_key
+            payload, upstream_model, api_key
         ):
             if line.startswith("data:"):
                 chunk_str = line[6:]
                 if not chunk_str or chunk_str.isspace():
                     logger.debug(
-                        f"Received empty data line for model {model}, skipping."
+                        f"Received empty data line for model {response_model}, skipping."
                     )
                     continue
                 try:
@@ -457,12 +484,12 @@ class OpenAIChatService:
                     usage_metadata = chunk.get("usageMetadata", {})
                 except json.JSONDecodeError:
                     logger.error(
-                        f"Failed to decode JSON from stream for model {model}: {chunk_str}"
+                        f"Failed to decode JSON from stream for model {response_model}: {chunk_str}"
                     )
                     continue
                 openai_chunk = self.response_handler.handle_response(
                     chunk,
-                    model,
+                    response_model,
                     stream=True,
                     finish_reason=None,
                     usage_metadata=usage_metadata,
@@ -487,12 +514,16 @@ class OpenAIChatService:
                         yield f"data: {json.dumps(openai_chunk)}\n\n"
 
         if tool_call_flag:
-            yield f"data: {json.dumps(self.response_handler.handle_response({}, model, stream=True, finish_reason='tool_calls', usage_metadata=usage_metadata))}\n\n"
+            yield f"data: {json.dumps(self.response_handler.handle_response({}, response_model, stream=True, finish_reason='tool_calls', usage_metadata=usage_metadata))}\n\n"
         else:
-            yield f"data: {json.dumps(self.response_handler.handle_response({}, model, stream=True, finish_reason='stop', usage_metadata=usage_metadata))}\n\n"
+            yield f"data: {json.dumps(self.response_handler.handle_response({}, response_model, stream=True, finish_reason='stop', usage_metadata=usage_metadata))}\n\n"
 
     async def _handle_stream_completion(
-        self, model: str, payload: Dict[str, Any], api_key: str
+        self,
+        response_model: str,
+        upstream_model: str,
+        payload: Dict[str, Any],
+        api_key: str,
     ) -> AsyncGenerator[str, None]:
         """处理流式聊天完成，添加重试逻辑和假流式支持"""
         retries = 0
@@ -510,17 +541,23 @@ class OpenAIChatService:
                 stream_generator = None
                 if settings.FAKE_STREAM_ENABLED:
                     logger.info(
-                        f"Using fake stream logic for model: {model}, Attempt: {retries + 1}"
+                        f"Using fake stream logic for model: {response_model}, Attempt: {retries + 1}"
                     )
                     stream_generator = self._fake_stream_logic_impl(
-                        model, payload, current_attempt_key
+                        response_model,
+                        upstream_model,
+                        payload,
+                        current_attempt_key,
                     )
                 else:
                     logger.info(
-                        f"Using real stream logic for model: {model}, Attempt: {retries + 1}"
+                        f"Using real stream logic for model: {response_model}, Attempt: {retries + 1}"
                     )
                     stream_generator = self._real_stream_logic_impl(
-                        model, payload, current_attempt_key
+                        response_model,
+                        upstream_model,
+                        payload,
+                        current_attempt_key,
                     )
 
                 async for chunk_data in stream_generator:
@@ -528,7 +565,7 @@ class OpenAIChatService:
 
                 yield "data: [DONE]\n\n"
                 logger.info(
-                    f"Streaming completed successfully for model: {model}, FakeStream: {settings.FAKE_STREAM_ENABLED}, Attempt: {retries + 1}"
+                    f"Streaming completed successfully for model: {response_model}, FakeStream: {settings.FAKE_STREAM_ENABLED}, Attempt: {retries + 1}"
                 )
                 is_success = True
                 status_code = 200
@@ -545,7 +582,7 @@ class OpenAIChatService:
 
                 await add_error_log(
                     gemini_key=current_attempt_key,
-                    model_name=model,
+                    model_name=response_model,
                     error_type="openai-chat-stream",
                     error_log=error_log_msg,
                     error_code=status_code,
@@ -577,14 +614,14 @@ class OpenAIChatService:
 
                 if retries >= max_retries:
                     logger.error(
-                        f"Max retries ({max_retries}) reached for streaming model {model}."
+                        f"Max retries ({max_retries}) reached for streaming model {response_model}."
                     )
                     raise
             finally:
                 end_time = time.perf_counter()
                 latency_ms = int((end_time - start_time) * 1000)
                 await add_request_log(
-                    model_name=model,
+                    model_name=response_model,
                     api_key=current_attempt_key,
                     is_success=is_success,
                     status_code=status_code,
@@ -593,8 +630,12 @@ class OpenAIChatService:
                 )
 
     async def create_image_chat_completion(
-        self, request: ChatRequest, api_key: str
+        self,
+        request: ChatRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> Union[Dict[str, Any], AsyncGenerator[str, None]]:
+        response_model = (public_model or request.model).strip()
 
         image_generate_request = ImageGenerationRequest()
         image_generate_request.prompt = request.messages[-1]["content"]
@@ -604,11 +645,11 @@ class OpenAIChatService:
 
         if request.stream:
             return self._handle_stream_image_completion(
-                request.model, image_res, api_key
+                response_model, image_res, api_key
             )
         else:
             return await self._handle_normal_image_completion(
-                request.model, image_res, api_key
+                response_model, image_res, api_key
             )
 
     async def _handle_stream_image_completion(

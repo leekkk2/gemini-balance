@@ -193,6 +193,7 @@ This endpoint is directly forwarded to official OpenAI Compatible API format end
 | `SHOW_THINKING_PROCESS` | Display model's thinking process | `true` |
 | `THINKING_MODELS` | Models supporting thinking process | `[]` |
 | `THINKING_BUDGET_MAP` | Budget map for thinking function (model:budget) | `{}` |
+| `MODEL_ALIASES` | Model alias map (`alias -> actual model`) | `{}` |
 | `URL_NORMALIZATION_ENABLED` | Enable smart URL routing | `false` |
 | `URL_CONTEXT_ENABLED` | Enable URL context understanding | `false` |
 | `URL_CONTEXT_MODELS` | Models supporting URL context | `[]` |
@@ -243,6 +244,16 @@ This endpoint is directly forwarded to official OpenAI Compatible API format end
 | `FAKE_STREAM_EMPTY_DATA_INTERVAL_SECONDS` | Heartbeat interval for fake streaming (seconds) | `5` |
 
 </details>
+
+### Model alias example
+
+Use `MODEL_ALIASES` when you want callers to send a stable alias while Gemini Balance forwards to the real model name.
+
+```env
+MODEL_ALIASES={"gemini-pro":"gemini-2.5-pro","gemini-flash":"gemini-2.5-flash"}
+```
+
+With this config, requests using `gemini-pro` will be routed to `gemini-2.5-pro`.
 
 ---
 

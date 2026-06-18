@@ -333,9 +333,14 @@ class GeminiChatService:
         return response_copy
 
     async def generate_content(
-        self, model: str, request: GeminiRequest, api_key: str
+        self,
+        model: str,
+        request: GeminiRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> Dict[str, Any]:
         """生成内容"""
+        response_model = (public_model or model).strip()
         # 檢查並獲取文件專用的 API key（如果有文件）
         file_names = _extract_file_references(request.model_dump().get("contents", []))
         if file_names:
@@ -362,7 +367,9 @@ class GeminiChatService:
             response = await self.api_client.generate_content(payload, model, api_key)
             is_success = True
             status_code = 200
-            return self.response_handler.handle_response(response, model, stream=False)
+            return self.response_handler.handle_response(
+                response, response_model, stream=False
+            )
         except Exception as e:
             is_success = False
             status_code = e.args[0]
@@ -371,7 +378,7 @@ class GeminiChatService:
 
             await add_error_log(
                 gemini_key=api_key,
-                model_name=model,
+                model_name=response_model,
                 error_type="gemini-chat-non-stream",
                 error_log=error_log_msg,
                 error_code=status_code,
@@ -383,7 +390,7 @@ class GeminiChatService:
             end_time = time.perf_counter()
             latency_ms = int((end_time - start_time) * 1000)
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,
@@ -392,9 +399,14 @@ class GeminiChatService:
             )
 
     async def count_tokens(
-        self, model: str, request: GeminiRequest, api_key: str
+        self,
+        model: str,
+        request: GeminiRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> Dict[str, Any]:
         """计算token数量"""
+        response_model = (public_model or model).strip()
         # countTokens API只需要contents
         payload = {
             "contents": _filter_empty_parts(request.model_dump().get("contents", []))
@@ -418,7 +430,7 @@ class GeminiChatService:
 
             await add_error_log(
                 gemini_key=api_key,
-                model_name=model,
+                model_name=response_model,
                 error_type="gemini-count-tokens",
                 error_log=error_log_msg,
                 error_code=status_code,
@@ -429,7 +441,7 @@ class GeminiChatService:
             end_time = time.perf_counter()
             latency_ms = int((end_time - start_time) * 1000)
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,
@@ -438,9 +450,14 @@ class GeminiChatService:
             )
 
     async def stream_generate_content(
-        self, model: str, request: GeminiRequest, api_key: str
+        self,
+        model: str,
+        request: GeminiRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """流式生成内容"""
+        response_model = (public_model or model).strip()
         # 檢查並獲取文件專用的 API key（如果有文件）
         file_names = _extract_file_references(request.model_dump().get("contents", []))
         if file_names:
@@ -476,7 +493,7 @@ class GeminiChatService:
                     if line.startswith("data:"):
                         line = line[6:]
                         response_data = self.response_handler.handle_response(
-                            json.loads(line), model, stream=True
+                            json.loads(line), response_model, stream=True
                         )
                         text = self._extract_text_from_response(response_data)
                         # 如果有文本内容，且开启了流式输出优化器，则使用流式输出优化器处理
@@ -508,7 +525,7 @@ class GeminiChatService:
 
                 await add_error_log(
                     gemini_key=current_attempt_key,
-                    model_name=model,
+                    model_name=response_model,
                     error_type="gemini-chat-stream",
                     error_log=error_log_msg,
                     error_code=status_code,
@@ -536,7 +553,7 @@ class GeminiChatService:
                 end_time = time.perf_counter()
                 latency_ms = int((end_time - start_time) * 1000)
                 await add_request_log(
-                    model_name=model,
+                    model_name=response_model,
                     api_key=final_api_key,
                     is_success=is_success,
                     status_code=status_code,

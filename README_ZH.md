@@ -193,6 +193,7 @@ app/
 | `SHOW_THINKING_PROCESS` | 是否显示模型思考过程 | `true` |
 | `THINKING_MODELS` | 支持思考功能的模型列表 | `[]` |
 | `THINKING_BUDGET_MAP` | 思考功能预算映射 (模型名:预算值) | `{}` |
+| `MODEL_ALIASES` | 模型别名映射 (`别名 -> 实际模型`) | `{}` |
 | `URL_NORMALIZATION_ENABLED` | 是否启用智能路由映射功能 | `false` |
 | `URL_CONTEXT_ENABLED` | 是否启用URL上下文理解功能 | `false` |
 | `URL_CONTEXT_MODELS` | 支持URL上下文理解功能的模型列表 | `[]` |
@@ -243,6 +244,16 @@ app/
 | `FAKE_STREAM_EMPTY_DATA_INTERVAL_SECONDS` | 伪流式传输时发送心跳空数据的间隔秒数 | `5` |
 
 </details>
+
+### 模型别名示例
+
+当你希望调用方使用稳定别名、服务端再转发到真实模型时，可以配置 `MODEL_ALIASES`：
+
+```env
+MODEL_ALIASES={"gemini-pro":"gemini-2.5-pro","gemini-flash":"gemini-2.5-flash"}
+```
+
+配置后，请求里的 `gemini-pro` 会自动映射到 `gemini-2.5-pro`。
 
 ---
 

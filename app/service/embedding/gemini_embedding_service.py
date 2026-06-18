@@ -51,9 +51,14 @@ class GeminiEmbeddingService:
         self.key_manager = key_manager
 
     async def embed_content(
-        self, model: str, request: GeminiEmbedRequest, api_key: str
+        self,
+        model: str,
+        request: GeminiEmbedRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> Dict[str, Any]:
         """生成单一嵌入内容"""
+        response_model = (public_model or model).strip()
         payload = _build_embed_payload(request)
         start_time = time.perf_counter()
         request_datetime = datetime.datetime.now()
@@ -74,7 +79,7 @@ class GeminiEmbeddingService:
 
             await add_error_log(
                 gemini_key=api_key,
-                model_name=model,
+                model_name=response_model,
                 error_type="gemini-embed-single",
                 error_log=error_log_msg,
                 error_code=status_code,
@@ -86,7 +91,7 @@ class GeminiEmbeddingService:
             end_time = time.perf_counter()
             latency_ms = int((end_time - start_time) * 1000)
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,
@@ -95,9 +100,14 @@ class GeminiEmbeddingService:
             )
 
     async def batch_embed_contents(
-        self, model: str, request: GeminiBatchEmbedRequest, api_key: str
+        self,
+        model: str,
+        request: GeminiBatchEmbedRequest,
+        api_key: str,
+        public_model: str | None = None,
     ) -> Dict[str, Any]:
         """生成批量嵌入内容"""
+        response_model = (public_model or model).strip()
         payload = _build_batch_embed_payload(request, model)
         start_time = time.perf_counter()
         request_datetime = datetime.datetime.now()
@@ -120,7 +130,7 @@ class GeminiEmbeddingService:
 
             await add_error_log(
                 gemini_key=api_key,
-                model_name=model,
+                model_name=response_model,
                 error_type="gemini-embed-batch",
                 error_log=error_log_msg,
                 error_code=status_code,
@@ -132,7 +142,7 @@ class GeminiEmbeddingService:
             end_time = time.perf_counter()
             latency_ms = int((end_time - start_time) * 1000)
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,

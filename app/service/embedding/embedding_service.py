@@ -16,9 +16,14 @@ logger = get_embeddings_logger()
 class EmbeddingService:
 
     async def create_embedding(
-        self, input_text: Union[str, List[str]], model: str, api_key: str
+        self,
+        input_text: Union[str, List[str]],
+        model: str,
+        api_key: str,
+        public_model: str | None = None,
     ) -> CreateEmbeddingResponse:
         """Create embeddings using OpenAI API with database logging"""
+        response_model = (public_model or model).strip()
         start_time = time.perf_counter()
         request_datetime = datetime.datetime.now()
         is_success = False
@@ -44,6 +49,8 @@ class EmbeddingService:
         try:
             client = openai.OpenAI(api_key=api_key, base_url=settings.BASE_URL)
             response = client.embeddings.create(input=input_text, model=model)
+            if public_model and getattr(response, "model", None) != response_model:
+                response.model = response_model
             is_success = True
             status_code = 200
             return response
@@ -65,7 +72,7 @@ class EmbeddingService:
             if not is_success:
                 await add_error_log(
                     gemini_key=api_key,
-                    model_name=model,
+                    model_name=response_model,
                     error_type="openai-embedding",
                     error_log=error_log_msg,
                     error_code=status_code,
@@ -77,7 +84,7 @@ class EmbeddingService:
                     request_datetime=request_datetime,
                 )
             await add_request_log(
-                model_name=model,
+                model_name=response_model,
                 api_key=api_key,
                 is_success=is_success,
                 status_code=status_code,

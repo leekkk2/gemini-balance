@@ -78,30 +78,44 @@ async def chat_completion(
 ):
     """处理 OpenAI 聊天补全请求，支持流式响应和特定模型切换。"""
     operation_name = "chat_completion"
-    is_image_chat = request.model == f"{settings.CREATE_IMAGE_MODEL}-chat"
-    current_api_key = api_key
-    if is_image_chat:
-        current_api_key = await key_manager.get_paid_key()
-
     async with handle_route_errors(logger, operation_name):
         logger.info(f"Handling chat completion request for model: {request.model}")
         logger.debug(f"Request: \n{request.model_dump_json(indent=2)}")
-        logger.info(f"Using allowed token: {allowed_token}")
-        logger.info(f"Using API key: {redact_key_for_logging(current_api_key)}")
 
         if not await model_service.check_model_support(request.model):
             raise HTTPException(
                 status_code=400, detail=f"Model {request.model} is not supported"
             )
 
+        resolved_model = model_service.resolve_request_model(request.model)
+        is_image_chat = model_service.is_image_chat_model(request.model)
+        current_api_key = api_key
+        if is_image_chat:
+            current_api_key = await key_manager.get_paid_key()
+
+        if resolved_model.is_alias:
+            logger.info(
+                f"Resolved OpenAI model alias '{resolved_model.public_name}' -> '{resolved_model.upstream_name}'"
+            )
+
+        logger.info(f"Using allowed token: {allowed_token}")
+        logger.info(f"Using API key: {redact_key_for_logging(current_api_key)}")
+
         raw_response = None
         if is_image_chat:
             raw_response = await chat_service.create_image_chat_completion(
-                request, current_api_key
+                request,
+                current_api_key,
+                public_model=resolved_model.public_name,
             )
         else:
+            upstream_request = request.model_copy(
+                update={"model": resolved_model.upstream_name}
+            )
             raw_response = await chat_service.create_chat_completion(
-                request, current_api_key
+                upstream_request,
+                current_api_key,
+                public_model=resolved_model.public_name,
             )
 
         if request.stream:
@@ -160,8 +174,20 @@ async def embedding(
         api_key = await key_manager.get_next_working_key()
         logger.info(f"Using allowed token: {allowed_token}")
         logger.info(f"Using API key: {redact_key_for_logging(api_key)}")
+        if not await model_service.check_model_support(request.model):
+            raise HTTPException(
+                status_code=400, detail=f"Model {request.model} is not supported"
+            )
+        resolved_model = model_service.resolve_request_model(request.model)
+        if resolved_model.is_alias:
+            logger.info(
+                f"Resolved OpenAI embedding alias '{resolved_model.public_name}' -> '{resolved_model.upstream_name}'"
+            )
         response = await embedding_service.create_embedding(
-            input_text=request.input, model=request.model, api_key=api_key
+            input_text=request.input,
+            model=resolved_model.upstream_name,
+            api_key=api_key,
+            public_model=resolved_model.public_name,
         )
         return response
 

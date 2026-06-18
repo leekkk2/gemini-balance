@@ -8,6 +8,9 @@ const MAP_VALUE_INPUT_CLASS = "map-value-input";
 const CUSTOM_HEADER_ITEM_CLASS = "custom-header-item";
 const CUSTOM_HEADER_KEY_INPUT_CLASS = "custom-header-key-input";
 const CUSTOM_HEADER_VALUE_INPUT_CLASS = "custom-header-value-input";
+const MODEL_ALIAS_ITEM_CLASS = "model-alias-item";
+const MODEL_ALIAS_KEY_INPUT_CLASS = "model-alias-key-input";
+const MODEL_ALIAS_VALUE_INPUT_CLASS = "model-alias-value-input";
 const SAFETY_SETTING_ITEM_CLASS = "safety-setting-item";
 const SHOW_CLASS = "show"; // For modals
 const API_KEY_REGEX = /AIzaSy\S{33}/g;
@@ -454,6 +457,11 @@ document.addEventListener("DOMContentLoaded", function () {
     addCustomHeaderBtn.addEventListener("click", () => addCustomHeaderItem());
   }
 
+  const addModelAliasBtn = document.getElementById("addModelAliasBtn");
+  if (addModelAliasBtn) {
+    addModelAliasBtn.addEventListener("click", () => addModelAliasItem());
+  }
+
   initializeSensitiveFields(); // Initialize sensitive field handling
 
   // Vertex Express API Key Modal Elements and Events
@@ -770,6 +778,13 @@ async function initConfig() {
     ) {
       config.CUSTOM_HEADERS = {}; // 默认为空对象
     }
+    if (
+      !config.MODEL_ALIASES ||
+      typeof config.MODEL_ALIASES !== "object" ||
+      config.MODEL_ALIASES === null
+    ) {
+      config.MODEL_ALIASES = {};
+    }
     // --- 新增：处理 SAFETY_SETTINGS 默认值 ---
     if (!config.SAFETY_SETTINGS || !Array.isArray(config.SAFETY_SETTINGS)) {
       config.SAFETY_SETTINGS = []; // 默认为空数组
@@ -846,6 +861,7 @@ async function initConfig() {
       THINKING_MODELS: [],
       THINKING_BUDGET_MAP: {},
       CUSTOM_HEADERS: {},
+      MODEL_ALIASES: {},
       AUTO_DELETE_ERROR_LOGS_ENABLED: false,
       AUTO_DELETE_ERROR_LOGS_DAYS: 7, // 新增默认值
       AUTO_DELETE_REQUEST_LOGS_ENABLED: false, // 新增默认值
@@ -885,6 +901,10 @@ function populateForm(config) {
   } else {
     console.error("Critical: THINKING_BUDGET_MAP_container not found!");
     return; // Cannot proceed
+  }
+  const modelAliasesContainer = document.getElementById("MODEL_ALIASES_container");
+  if (modelAliasesContainer) {
+    modelAliasesContainer.innerHTML = "";
   }
 
   // 2. Populate THINKING_MODELS and build the map
@@ -964,6 +984,20 @@ function populateForm(config) {
       '<div class="text-gray-500 text-sm italic">添加自定义请求头，例如 X-Api-Key: your-key</div>';
   }
 
+  const modelAliasesAdded =
+    modelAliasesContainer &&
+    config.MODEL_ALIASES &&
+    typeof config.MODEL_ALIASES === "object"
+      ? Object.entries(config.MODEL_ALIASES).reduce((added, [alias, model]) => {
+          createAndAppendModelAliasItem(alias, model);
+          return true;
+        }, false)
+      : false;
+  if (!modelAliasesAdded && modelAliasesContainer) {
+    modelAliasesContainer.innerHTML =
+      '<div class="text-gray-500 text-sm italic">请求传入左侧别名时，将自动映射到右侧实际模型，例如 gemini-pro -> gemini-2.5-pro。</div>';
+  }
+
   // 4. Populate other array fields (excluding THINKING_MODELS and API_KEYS)
   for (const [key, value] of Object.entries(config)) {
     if (Array.isArray(value) && key !== "THINKING_MODELS" && key !== "API_KEYS") {
@@ -998,7 +1032,7 @@ function populateForm(config) {
       !(
         typeof value === "object" &&
         value !== null &&
-        key === "THINKING_BUDGET_MAP"
+        (key === "THINKING_BUDGET_MAP" || key === "MODEL_ALIASES")
       )
     ) {
       const element = document.getElementById(key);
@@ -1894,6 +1928,70 @@ function createAndAppendCustomHeaderItem(key, value) {
 }
 
 /**
+ * Adds a new model alias mapping item to the DOM.
+ */
+function addModelAliasItem() {
+  createAndAppendModelAliasItem("", "");
+}
+
+/**
+ * Creates and appends a DOM element for a model alias mapping.
+ * @param {string} alias - Public alias exposed to callers.
+ * @param {string} model - Actual model name routed by the server.
+ */
+function createAndAppendModelAliasItem(alias, model) {
+  const container = document.getElementById("MODEL_ALIASES_container");
+  if (!container) {
+    console.error("Cannot add model alias: MODEL_ALIASES_container not found!");
+    return;
+  }
+
+  const placeholder = container.querySelector(".text-gray-500.italic");
+  if (
+    placeholder &&
+    container.children.length === 1 &&
+    container.firstChild === placeholder
+  ) {
+    container.innerHTML = "";
+  }
+
+  const aliasItem = document.createElement("div");
+  aliasItem.className = `${MODEL_ALIAS_ITEM_CLASS} flex items-center mb-2 gap-2`;
+
+  const aliasInput = document.createElement("input");
+  aliasInput.type = "text";
+  aliasInput.value = alias;
+  aliasInput.placeholder = "别名，例如 gemini-pro";
+  aliasInput.className = `${MODEL_ALIAS_KEY_INPUT_CLASS} flex-grow px-3 py-2 border border-gray-300 rounded-md focus:outline-none bg-gray-100 text-gray-500`;
+
+  const arrow = document.createElement("span");
+  arrow.className = "text-gray-400 font-semibold select-none";
+  arrow.textContent = "->";
+
+  const modelInput = document.createElement("input");
+  modelInput.type = "text";
+  modelInput.value = model;
+  modelInput.placeholder = "实际模型，例如 gemini-2.5-pro";
+  modelInput.className = `${MODEL_ALIAS_VALUE_INPUT_CLASS} flex-grow px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:border-primary-500 focus:ring focus:ring-primary-200 focus:ring-opacity-50`;
+
+  const removeBtn = createRemoveButton();
+  removeBtn.addEventListener("click", () => {
+    aliasItem.remove();
+    if (container.children.length === 0) {
+      container.innerHTML =
+        '<div class="text-gray-500 text-sm italic">请求传入左侧别名时，将自动映射到右侧实际模型，例如 gemini-pro -> gemini-2.5-pro。</div>';
+    }
+  });
+
+  aliasItem.appendChild(aliasInput);
+  aliasItem.appendChild(arrow);
+  aliasItem.appendChild(modelInput);
+  aliasItem.appendChild(removeBtn);
+
+  container.appendChild(aliasItem);
+}
+
+/**
  * Collects all data from the configuration form.
  * @returns {object} An object containing all configuration data.
  */
@@ -1994,6 +2092,27 @@ function collectFormData() {
       if (keyInput && valueInput && keyInput.value.trim() !== "") {
         formData["CUSTOM_HEADERS"][keyInput.value.trim()] =
           valueInput.value.trim();
+      }
+    });
+  }
+
+  const modelAliasesContainer = document.getElementById("MODEL_ALIASES_container");
+  if (modelAliasesContainer) {
+    formData["MODEL_ALIASES"] = {};
+    const modelAliasItems = modelAliasesContainer.querySelectorAll(
+      `.${MODEL_ALIAS_ITEM_CLASS}`
+    );
+    modelAliasItems.forEach((item) => {
+      const aliasInput = item.querySelector(`.${MODEL_ALIAS_KEY_INPUT_CLASS}`);
+      const modelInput = item.querySelector(`.${MODEL_ALIAS_VALUE_INPUT_CLASS}`);
+      if (
+        aliasInput &&
+        modelInput &&
+        aliasInput.value.trim() !== "" &&
+        modelInput.value.trim() !== ""
+      ) {
+        formData["MODEL_ALIASES"][aliasInput.value.trim()] =
+          modelInput.value.trim();
       }
     });
   }
